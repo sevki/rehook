@@ -10,4 +10,5 @@ RUN go get github.com/sevki/rehook
 
 CMD rehook
 
-EXPOSE [9000, 9001]
+EXPOSE 9000
+EXPOSE 9001
