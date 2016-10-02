@@ -118,9 +118,19 @@ func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
 					return err
 				}
 			}
+			msg := fmt.Sprintf("Commit %s is signed-off.", (*c.SHA)[:7])
+			if _, _, err := client.Repositories.CreateStatus(owner, repo, *c.SHA, &github.RepoStatus{
+				State:       &SUCCESS,
+				Context:     &context,
+				TargetURL:   &dco,
+				Description: &msg,
+			}); err != nil {
+				return err
+			}
+
 			log.Printf("%s\n", addr)
 		} else {
-			msg := fmt.Sprintf("Commit %s is not signed-off", (*c.SHA)[:7])
+			msg := fmt.Sprintf("Commit %s is not signed-off.", (*c.SHA)[:7])
 			if _, _, err := client.Repositories.CreateStatus(owner, repo, *c.SHA, &github.RepoStatus{
 				State:       &ERROR,
 				Context:     &context,
@@ -132,6 +142,7 @@ func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
 
 		}
 	}
+
 	// Check uniqueness
 	id := []byte(r.Headers["X-Github-Delivery"])
 	deliveries := b.Bucket([]byte("deliveries"))
