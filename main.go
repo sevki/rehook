@@ -2,8 +2,10 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/boltdb/bolt"
@@ -27,7 +29,16 @@ var (
 	BucketHooks      = []byte("hooks")
 	BucketComponents = []byte("components")
 	BucketStats      = []byte("stats")
+
+	start = time.Now()
 )
+
+func status(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	w.Write([]byte("OK\n"))
+	w.Write([]byte(fmt.Sprintf("go:\t%s\n", runtime.Version())))
+	w.Write([]byte(fmt.Sprintf("uptime:\t%s\n", time.Since(start).String())))
+
+}
 
 func main() {
 	flag.Parse()
@@ -48,6 +59,7 @@ func main() {
 	// webhooks
 	hh := &HookHandler{hookStore, db}
 	router := httprouter.New()
+	router.GET("/_status", status)
 	router.GET("/h/:id", hh.ReceiveHook)
 	router.POST("/h/:id", hh.ReceiveHook)
 
