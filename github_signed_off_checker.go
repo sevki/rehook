@@ -18,7 +18,7 @@ var (
 	SUCCESS = "success"
 	ERROR   = "error"
 	context = "sevki.io/dco"
-	dco     = "http://developercertificate.org/"
+	dco     = "https://sevki.io/dco"
 )
 
 func init() {
@@ -118,7 +118,7 @@ func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
 					return err
 				}
 			}
-			msg := fmt.Sprintf("Commit %s is signed-off.", (*c.SHA)[:7])
+			msg := fmt.Sprintf("%s has signed-off %s.", *c.Commit.Author.Name, (*c.SHA)[:7])
 			if _, _, err := client.Repositories.CreateStatus(owner, repo, *c.SHA, &github.RepoStatus{
 				State:       &SUCCESS,
 				Context:     &context,
@@ -130,7 +130,7 @@ func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
 
 			log.Printf("%s\n", addr)
 		} else {
-			msg := fmt.Sprintf("Commit %s is not signed-off.", (*c.SHA)[:7])
+			msg := fmt.Sprintf("%s has not signed-off %s.", *c.Commit.Author.Name, (*c.SHA)[:7])
 			if _, _, err := client.Repositories.CreateStatus(owner, repo, *c.SHA, &github.RepoStatus{
 				State:       &ERROR,
 				Context:     &context,
