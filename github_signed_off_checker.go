@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/mail"
 	"regexp"
+	"strconv"
+	"strings"
 
 	"golang.org/x/oauth2"
 
@@ -14,11 +16,17 @@ import (
 	"github.com/google/go-github/github"
 )
 
+const (
+	DELIVERIES = "deliveries"
+	SOC        = "signed-off-comments"
+)
+
 var (
 	SUCCESS = "success"
 	ERROR   = "error"
-	context = "sevki.io/dco"
-	dco     = "https://sevki.io/dco"
+	context = "dco"
+	dco     = "https://developercertificate.org"
+	re      = regexp.MustCompile("Signed-off-by: (.* <.*>)")
 )
 
 func init() {
@@ -55,13 +63,16 @@ func (GithubSignedOffChecker) Init(h Hook, params map[string]string, b *bolt.Buc
 	if err := b.Put([]byte(fmt.Sprintf("%s-token", h.ID)), []byte(token)); err != nil {
 		return err
 	}
-	_, err := b.CreateBucketIfNotExists([]byte("deliveries"))
-	return err
+	for _, k := range []string{DELIVERIES, SOC} {
+		if _, err := b.CreateBucketIfNotExists([]byte(k)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Process verifies the signature and uniqueness of the delivery identifier.
 func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
-	re := regexp.MustCompile("Signed-off-by: (.* <.*>)")
 
 	token := b.Get([]byte(fmt.Sprintf("%s-token", h.ID)))
 	if token == nil {
@@ -85,69 +96,135 @@ func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
 
 	owner := *pr.PullRequest.Base.Repo.Owner.Login
 	repo := *pr.PullRequest.Base.Repo.Name
+	number := *pr.Number
 	commits, _, err := client.PullRequests.ListCommits(owner, repo, *pr.Number, &github.ListOptions{})
 	if err != nil {
 		return err
 	}
+	var unsignedCommits []string
+	var errs []error
 	for _, c := range commits {
-		x := re.FindStringSubmatch(*c.Commit.Message)
-		if len(x) == 2 {
-			addr, err := mail.ParseAddress(x[1])
+		if err := checkCommit(c); err != nil {
+			unsignedCommits = append(unsignedCommits, *c.SHA)
+			errs = append(errs, err)
+		}
+	}
+	lastCommit := *commits[len(commits)-1].SHA
+	if len(unsignedCommits) > 0 {
+
+		var msg string
+		msg = "All commits should be signed-off-by their respective authors"
+		if _, resp, err := client.Repositories.CreateStatus(owner, repo, lastCommit, &github.RepoStatus{
+			State:       &ERROR,
+			Context:     &context,
+			TargetURL:   &dco,
+			Description: &msg,
+		}); err != nil {
+			log.Println(resp.Header.Get("X-RateLimit-Limit"))
+			log.Println(resp.Header.Get("X-RateLimit-Remaining"))
+			log.Println(resp.Header.Get("X-RateLimit-Reset"))
+
+			return fmt.Errorf("error status send: %v", err)
+		}
+
+		unsignedCommits := unsignedCommits[:len(unsignedCommits)-1]
+		lastUnsignedCommit := unsignedCommits[len(unsignedCommits)-1]
+		if len(unsignedCommits) > 0 {
+			msg = fmt.Sprintf("Commits %s and %s are not signed-off.", strings.Join(unsignedCommits, ", "), lastUnsignedCommit)
+		} else {
+			msg = fmt.Sprintf("Commit %s is not signed-off.", lastUnsignedCommit)
+		}
+		cmnt := msg
+		cmnt += "\n\nPlease fix these issues:\n\n"
+		for i, err := range errs {
+			cmnt += fmt.Sprintf(">\t%d. %v\n", i+1, err)
+		}
+		if err := leaveComment(owner, repo, cmnt, number, client, b); err != nil {
+			return err
+		}
+	} else {
+		msg := fmt.Sprintf("All commits are signed-off.")
+		if _, _, err := client.Repositories.CreateStatus(owner, repo, lastCommit, &github.RepoStatus{
+			State:       &SUCCESS,
+			Context:     &context,
+			TargetURL:   &dco,
+			Description: &msg,
+		}); err != nil {
+			return err
+		}
+		id := pullid(owner, repo, number)
+		if commentID := get(b, SOC, id); commentID != nil {
+			cid, err := strconv.Atoi(string(commentID))
 			if err != nil {
 				return err
 			}
-			if *c.Commit.Author.Name != addr.Name {
-				msg := fmt.Sprintf("Commit author and signed-off-by author don't match.")
-				if _, _, err := client.Repositories.CreateStatus(owner, repo, *c.SHA, &github.RepoStatus{
-					State:       &ERROR,
-					Context:     &context,
-					TargetURL:   &dco,
-					Description: &msg,
-				}); err != nil {
-					return err
-				}
-			}
-			if *c.Commit.Author.Email != addr.Address {
-				msg := fmt.Sprintf("Commit address and signed-off-by address do not match.")
-				if _, _, err := client.Repositories.CreateStatus(owner, repo, *c.SHA, &github.RepoStatus{
-					State:       &ERROR,
-					Context:     &context,
-					TargetURL:   &dco,
-					Description: &msg,
-				}); err != nil {
-					return err
-				}
-			}
-			msg := fmt.Sprintf("%s has signed-off %s.", *c.Commit.Author.Name, (*c.SHA)[:7])
-			if _, _, err := client.Repositories.CreateStatus(owner, repo, *c.SHA, &github.RepoStatus{
-				State:       &SUCCESS,
-				Context:     &context,
-				TargetURL:   &dco,
-				Description: &msg,
-			}); err != nil {
+			if _, err = client.Issues.DeleteComment(owner, repo, cid); err != nil {
 				return err
 			}
-
-			log.Printf("%s\n", addr)
-		} else {
-			msg := fmt.Sprintf("%s has not signed-off %s.", *c.Commit.Author.Name, (*c.SHA)[:7])
-			if _, _, err := client.Repositories.CreateStatus(owner, repo, *c.SHA, &github.RepoStatus{
-				State:       &ERROR,
-				Context:     &context,
-				TargetURL:   &dco,
-				Description: &msg,
-			}); err != nil {
-				return err
-			}
-
 		}
+
 	}
 
 	// Check uniqueness
-	id := []byte(r.Headers["X-Github-Delivery"])
-	deliveries := b.Bucket([]byte("deliveries"))
-	if did := deliveries.Get([]byte(id)); did != nil {
+	id := r.Headers["X-Github-Delivery"]
+	if did := get(b, DELIVERIES, id); did != nil {
 		return errors.New("duplicate delivery")
 	}
-	return deliveries.Put([]byte(id), []byte{})
+	return put(b, DELIVERIES, id, []byte{})
+}
+func leaveComment(owner, repo, body string, number int, client *github.Client, b *bolt.Bucket) error {
+	id := pullid(owner, repo, number)
+	commentID := get(b, SOC, id)
+
+	if commentID != nil {
+		cid, err := strconv.Atoi(string(commentID))
+		if err != nil {
+			return err
+		}
+		_, _, err = client.Issues.EditComment(owner, repo, cid, &github.IssueComment{Body: &body})
+		return err
+	} else {
+		c, _, err := client.Issues.CreateComment(owner, repo, number, &github.IssueComment{Body: &body})
+		if err != nil {
+			return err
+		}
+		if err := put(b, SOC, id, []byte(strconv.Itoa(*c.ID))); err != nil {
+			log.Fatal(err)
+			return err
+		}
+
+	}
+	return nil
+}
+func pullid(o, r string, n int) string {
+	return fmt.Sprintf("%s-%s-%d", o, r, n)
+}
+func put(b *bolt.Bucket, bname, k string, v []byte) error {
+	b = b.Bucket([]byte(bname))
+	return b.Put([]byte(k), v)
+}
+func get(b *bolt.Bucket, bname, k string) []byte {
+	b = b.Bucket([]byte(bname))
+	if b == nil {
+		log.Printf("bucket get: %s doesn't exist.\n", bname)
+	}
+	return b.Get([]byte(k))
+}
+func checkCommit(c github.RepositoryCommit) error {
+	x := re.FindStringSubmatch(*c.Commit.Message)
+	if len(x) == 2 {
+		addr, err := mail.ParseAddress(x[1])
+		if err != nil {
+			return fmt.Errorf("%s has a malformed signature.", *c.Commit.Author.Name, (*c.SHA)[:7])
+		}
+		if *c.Commit.Author.Name != addr.Name {
+			return fmt.Errorf("Commit author name and signed-off-by author don't match.")
+		}
+		if *c.Commit.Author.Email != addr.Address {
+			return fmt.Errorf("Commit author email and signed-off-by address do not match.")
+		}
+		return nil
+	} else {
+		return fmt.Errorf("%s has not signed-off %s.", *c.Commit.Author.Name, (*c.SHA)[:7])
+	}
 }
