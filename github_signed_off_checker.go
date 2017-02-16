@@ -10,10 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/oauth2"
-
 	"github.com/boltdb/bolt"
 	"github.com/google/go-github/github"
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -24,8 +23,8 @@ const (
 var (
 	SUCCESS = "success"
 	ERROR   = "error"
-	context = "dco"
-	dco     = "https://developercertificate.org"
+	context = "signed-off-by.me"
+	dco     = "http://signed-off-by.me/"
 	re      = regexp.MustCompile("Signed-off-by: (.* <.*>)")
 )
 
@@ -74,6 +73,11 @@ func (GithubSignedOffChecker) Init(h Hook, params map[string]string, b *bolt.Buc
 // Process verifies the signature and uniqueness of the delivery identifier.
 func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
 
+	// Check uniqueness
+	id := r.Headers["X-Github-Delivery"]
+	if did := get(b, DELIVERIES, id); did != nil {
+		return errors.New("duplicate delivery")
+	}
 	token := b.Get([]byte(fmt.Sprintf("%s-token", h.ID)))
 	if token == nil {
 		return errors.New("github validator not initialized")
@@ -114,21 +118,17 @@ func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
 
 		var msg string
 		msg = "All commits should be signed-off-by their respective authors"
-		if _, resp, err := client.Repositories.CreateStatus(owner, repo, lastCommit, &github.RepoStatus{
+		if _, _, err := client.Repositories.CreateStatus(owner, repo, lastCommit, &github.RepoStatus{
 			State:       &ERROR,
 			Context:     &context,
 			TargetURL:   &dco,
 			Description: &msg,
 		}); err != nil {
-			log.Println(resp.Header.Get("X-RateLimit-Limit"))
-			log.Println(resp.Header.Get("X-RateLimit-Remaining"))
-			log.Println(resp.Header.Get("X-RateLimit-Reset"))
-
 			return fmt.Errorf("error status send: %v", err)
 		}
 
-		unsignedCommits := unsignedCommits[:len(unsignedCommits)-1]
 		lastUnsignedCommit := unsignedCommits[len(unsignedCommits)-1]
+		unsignedCommits := unsignedCommits[:len(unsignedCommits)-1]
 		if len(unsignedCommits) > 0 {
 			msg = fmt.Sprintf("Commits %s and %s are not signed-off.", strings.Join(unsignedCommits, ", "), lastUnsignedCommit)
 		} else {
@@ -160,16 +160,13 @@ func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
 			}
 			if _, err = client.Issues.DeleteComment(owner, repo, cid); err != nil {
 				return err
+			} else {
+				b.Delete([]byte(id))
 			}
 		}
 
 	}
 
-	// Check uniqueness
-	id := r.Headers["X-Github-Delivery"]
-	if did := get(b, DELIVERIES, id); did != nil {
-		return errors.New("duplicate delivery")
-	}
 	return put(b, DELIVERIES, id, []byte{})
 }
 func leaveComment(owner, repo, body string, number int, client *github.Client, b *bolt.Bucket) error {
@@ -182,6 +179,10 @@ func leaveComment(owner, repo, body string, number int, client *github.Client, b
 			return err
 		}
 		_, _, err = client.Issues.EditComment(owner, repo, cid, &github.IssueComment{Body: &body})
+		if err != nil {
+			b.Delete([]byte(id))
+			return leaveComment(owner, repo, body, number, client, b)
+		}
 		return err
 	} else {
 		c, _, err := client.Issues.CreateComment(owner, repo, number, &github.IssueComment{Body: &body})
