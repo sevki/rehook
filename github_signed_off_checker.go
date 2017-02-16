@@ -139,6 +139,8 @@ func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
 		for i, err := range errs {
 			cmnt += fmt.Sprintf(">\t%d. %v\n", i+1, err)
 		}
+		cmnt += "\n\nIf you'd like more information on how to sign your commits please visit [signed-off-by.me](https://signed-off-by.me)"
+
 		if err := leaveComment(owner, repo, cmnt, number, client, b); err != nil {
 			return err
 		}
@@ -172,7 +174,18 @@ func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
 func leaveComment(owner, repo, body string, number int, client *github.Client, b *bolt.Bucket) error {
 	id := pullid(owner, repo, number)
 	commentID := get(b, SOC, id)
-
+	newComment := func() error {
+		c, _, err := client.Issues.CreateComment(owner, repo, number, &github.IssueComment{Body: &body})
+		if err != nil {
+			log.Println(err)
+			return err
+		}
+		if err := put(b, SOC, id, []byte(strconv.Itoa(*c.ID))); err != nil {
+			log.Fatal(err)
+			return err
+		}
+		return nil
+	}
 	if commentID != nil {
 		cid, err := strconv.Atoi(string(commentID))
 		if err != nil {
@@ -181,19 +194,11 @@ func leaveComment(owner, repo, body string, number int, client *github.Client, b
 		_, _, err = client.Issues.EditComment(owner, repo, cid, &github.IssueComment{Body: &body})
 		if err != nil {
 			b.Delete([]byte(id))
-			return leaveComment(owner, repo, body, number, client, b)
+return newComment()
 		}
 		return err
 	} else {
-		c, _, err := client.Issues.CreateComment(owner, repo, number, &github.IssueComment{Body: &body})
-		if err != nil {
-			return err
-		}
-		if err := put(b, SOC, id, []byte(strconv.Itoa(*c.ID))); err != nil {
-			log.Fatal(err)
-			return err
-		}
-
+return newComment()
 	}
 	return nil
 }
