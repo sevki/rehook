@@ -194,11 +194,11 @@ func leaveComment(owner, repo, body string, number int, client *github.Client, b
 		_, _, err = client.Issues.EditComment(owner, repo, cid, &github.IssueComment{Body: &body})
 		if err != nil {
 			b.Delete([]byte(id))
-return newComment()
+			return newComment()
 		}
 		return err
 	} else {
-return newComment()
+		return newComment()
 	}
 	return nil
 }
@@ -216,7 +216,7 @@ func get(b *bolt.Bucket, bname, k string) []byte {
 	}
 	return b.Get([]byte(k))
 }
-func checkCommit(c github.RepositoryCommit) error {
+func checkCommit(c *github.RepositoryCommit) error {
 	x := re.FindStringSubmatch(*c.Commit.Message)
 	if len(x) == 2 {
 		addr, err := mail.ParseAddress(x[1])
