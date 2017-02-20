@@ -58,7 +58,7 @@ func (GithubReviewRequest) Init(h Hook, params map[string]string, b *bolt.Bucket
 func (GithubReviewRequest) Process(h Hook, r Request, b *bolt.Bucket) error {
 
 	// Check uniqueness
-	id := r.Headers["X-Github-Delivery"]
+	id := fmt.Sprintf("GHR-%s", r.Headers["X-Github-Delivery"])
 	if did := get(b, DELIVERIES, id); did != nil {
 		//		return errors.New("duplicate delivery")
 	}
