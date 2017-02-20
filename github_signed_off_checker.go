@@ -76,7 +76,7 @@ func (GithubSignedOffChecker) Process(h Hook, r Request, b *bolt.Bucket) error {
 	// Check uniqueness
 	id := fmt.Sprintf("GHSOFC-%s", r.Headers["X-Github-Delivery"])
 	if did := get(b, DELIVERIES, id); did != nil {
-		return errors.New("duplicate delivery")
+		return fmt.Errorf("duplicate delivery: %s", id)
 	}
 	token := b.Get([]byte(fmt.Sprintf("%s-token", h.ID)))
 	if token == nil {
