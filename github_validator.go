@@ -66,10 +66,10 @@ func (GithubValidator) Process(h Hook, r Request, b *bolt.Bucket) error {
 	}
 
 	// Check uniqueness
-	id := []byte(r.Headers["X-Github-Delivery"])
+	id := fmt.Sprintf("GHR-%s-%s", h.ID, r.Headers["X-Github-Delivery"])
 	deliveries := b.Bucket([]byte("deliveries"))
 	if did := deliveries.Get([]byte(id)); did != nil {
-		return errors.New("duplicate delivery")
+		return fmt.Errorf("duplicate delivery: %s", id)
 	}
 	return deliveries.Put([]byte(id), []byte{})
 }
